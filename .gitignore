@@ -1,0 +1,29 @@
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.fastembed_cache/
+
+# Node.js
+node_modules/
+dist/
+build/
+.next/
+
+# Databases & Cache
+qdrant_db/
+backend/.fastembed_cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Large files/Docs
+*.pdf
+temp_*
+backend_log.txt
+available_models.txt
