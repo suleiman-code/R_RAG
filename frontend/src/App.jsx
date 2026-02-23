@@ -10,7 +10,7 @@ function App() {
     const [messages, setMessages] = useState([
         {
             role: 'assistant',
-            content: 'Hello! I am your Inference Logic engine. Upload a PDF to start analyzing.'
+            content: 'Welcome. I am Inference Logic, your Document Intelligence Assistant. Please upload a PDF to begin the analysis.'
         }
     ])
     const [isLoading, setIsLoading] = useState(false)
@@ -86,9 +86,16 @@ function App() {
                 sources: response.data.sources
             }])
         } catch (error) {
+            let errorMsg = 'An unexpected error occurred while processing your request.';
+            if (!error.response) {
+                errorMsg = 'Connection lost. Please ensure the backend services are functional.';
+            } else if (error.response.status === 500) {
+                errorMsg = 'The AI engine encountered an internal error. Our logs have captured this for review.';
+            }
+
             setMessages(prev => [...prev, {
                 role: 'assistant',
-                content: 'Sorry, I could not connect to the backend. Please make sure it is running on port 8080.'
+                content: errorMsg
             }])
         } finally {
             setIsLoading(false)

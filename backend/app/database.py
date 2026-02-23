@@ -35,7 +35,7 @@ def get_qdrant_client():
         tmp_client = QdrantClient(
             url=QDRANT_URL,
             api_key=QDRANT_API_KEY,
-            timeout=3,
+            timeout=30, # Increased timeout for production
             check_compatibility=False
         )
         # Test connection

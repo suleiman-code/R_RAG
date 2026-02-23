@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.document_loaders import PyPDFLoader
 from qdrant_client.http import models
+from loguru import logger
 
 # LangChain text splitter — support for both old and new package layouts
 try:
@@ -30,28 +31,30 @@ class RAGCore:
         )
 
         print("[RAGCore] Setting up Chat LLM...", flush=True)
-        # LLM — Gemini Flash se jawab generate hoga
+        # LLM — Gemini 2.5 Flash for high performance and accuracy
         self.llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
-            google_api_key=GEMINI_API_KEY
+            model="models/gemini-2.5-flash",
+            google_api_key=GEMINI_API_KEY,
+            temperature=0.1,
+            top_p=0.9
         )
 
         print("[RAGCore] Setting up Text Splitter...", flush=True)
-        # Chunker — PDF ko 500 tokens ke tukron mein torega
+        # Chunker — Better context for relevancy (800 tokens)
         self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=500,
-            chunk_overlap=50
+            chunk_size=800,
+            chunk_overlap=100
         )
 
         print("[RAGCore] Getting Qdrant Client...", flush=True)
         # Qdrant client
         self.client = get_qdrant_client()
 
-        # Sparse model — lazy load rakho taake startup hang na ho
-        # (fastembed downloads model on first call — isko defer karte hain)
+        # Sparse model — Load at startup to avoid delay during first query
         self._sparse_model = None
+        self._sparse_model = self._get_sparse_model()
 
-        print("[RAGCore] Ready!", flush=True)
+        logger.info("[RAGCore] Ready!")
 
     def _get_sparse_model(self):
         """
@@ -168,79 +171,101 @@ class RAGCore:
             sparse_model = None
 
         # Dense embed (hamesha chahiye)
+        logger.info(f"Generating dense embedding for query: {query[:30]}...")
         dense_query = await asyncio.get_event_loop().run_in_executor(
             None, self.embeddings.embed_query, query
         )
+        logger.info(f"Dense embedding generated. Dimension: {len(dense_query)}")
 
-        if sparse_model:
-            # Hybrid Search with RRF Fusion
-            sparse_result = list(sparse_model.embed([query]))[0]
-            results = self.client.query_points(
-                collection_name=COLLECTION_NAME,
-                prefetch=[
-                    models.Prefetch(vector=dense_query, limit=limit * 2),
-                    models.Prefetch(
-                        vector=models.SparseVector(
-                            indices=sparse_result.indices.tolist(),
-                            values=sparse_result.values.tolist()
-                        ),
-                        using="text-sparse",
-                        limit=limit * 2
-                    )
-                ],
-                query=models.FusionQuery(fusion=models.Fusion.RRF),
-                limit=limit
-            ).points
-        else:
-            # Simple Dense Search (Fallback)
-            results = self.client.query_points(
-                collection_name=COLLECTION_NAME,
-                query=dense_query,
-                limit=limit
-            ).points
-
-        return results
+        try:
+            if sparse_model:
+                # Hybrid Search with RRF Fusion
+                logger.info("Performing Hybrid Search with RRF...")
+                sparse_result = list(sparse_model.embed([query]))[0]
+                results = self.client.query_points(
+                    collection_name=COLLECTION_NAME,
+                    prefetch=[
+                        models.Prefetch(vector=dense_query, limit=limit),
+                        models.Prefetch(
+                            vector=models.SparseVector(
+                                indices=sparse_result.indices.tolist(),
+                                values=sparse_result.values.tolist()
+                            ),
+                            using="text-sparse",
+                            limit=limit
+                        )
+                    ],
+                    query=models.FusionQuery(fusion=models.Fusion.RRF),
+                    limit=limit
+                ).points
+                logger.info(f"Hybrid search returned {len(results)} points.")
+            else:
+                # Simple Dense Search (Fallback)
+                logger.info("Performing Dense-only Search...")
+                results = self.client.query_points(
+                    collection_name=COLLECTION_NAME,
+                    query=dense_query,
+                    limit=limit
+                ).points
+                logger.info(f"Dense search returned {len(results)} points.")
+            
+            return results
+        except Exception as e:
+            logger.error(f"Search Error: {str(e)}")
+            raise e
 
     async def generate_response(self, question: str) -> dict:
         """
         Full RAG pipeline: search context → construct prompt → Gemini jawab.
         """
-        search_results = await self.hybrid_search(question)
+        # Search for top 10 most relevant chunks
+        search_results = await self.hybrid_search(question, limit=10)
 
         if not search_results:
+            logger.warning(f"No context found for: {question}")
             return {
-                "answer": "I could not find relevant information in the uploaded documents. Please upload a PDF first.",
+                "answer": "I'm sorry, I couldn't find any relevant information in the uploaded documents to answer this question.",
                 "sources": []
             }
 
-        # Context assemble karo
-        context = "\n\n".join([r.payload["content"] for r in search_results])
-        sources = list(set([
-            f"Page {r.payload['metadata'].get('page', '?')}"
-            for r in search_results
-        ]))
+        # Deduplicate and Clean context for production quality
+        context_parts = []
+        for r in search_results:
+            content = r.payload.get("content", "").strip()
+            if content and content not in context_parts:
+                context_parts.append(content)
+        
+        context = "\n\n---\n\n".join(context_parts)
+        
+        sources = sorted(list(set([
+            f"Page {r.payload.get('metadata', {}).get('page', '?')}"
+            for r in search_results if r.payload and 'metadata' in r.payload
+        ])))
 
-        prompt = f"""You are 'Inference Logic', a sophisticated AI Assistant. Your goal is to provide accurate, concise, and professional answers based on the provided documents.
+        prompt = f"""You are 'Inference Logic', a Senior Document Intelligence Assistant. 
+Analyze the Context below and answer the Question with high precision.
 
-INSTRUCTIONS:
-1. Use ONLY the provided context to answer the question.
-2. If the answer is not in the context, politely state that you don't have enough information in the documents.
-3. Use Markdown for formatting (bold, lists, tables) if it helps clarity.
-4. If the question is a greeting or general, you can respond politely but remind the user to ask about the documents.
+TASK:
+1. Use ONLY the provided Context. 
+2. If the answer is not in the context, state that clearly.
+3. Be professional, direct, and structured.
+4. Mention sources when possible.
 
 Context:
 {context}
 
 Question: {question}
 
-Answer:"""
+Response:"""
 
-        # Gemini se jawab lo (blocking call — executor mein run karo)
-        response = await asyncio.get_event_loop().run_in_executor(
-            None, self.llm.invoke, prompt
-        )
-
-        return {
-            "answer": response.content,
-            "sources": sources
-        }
+        try:
+            logger.info(f"Generating response for question: {question[:50]}...")
+            # Use ainvoke for better async performance
+            response = await self.llm.ainvoke(prompt)
+            return {
+                "answer": response.content,
+                "sources": sources
+            }
+        except Exception as e:
+            logger.error(f"LLM Generation Error: {str(e)}")
+            raise e

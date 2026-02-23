@@ -1,16 +1,25 @@
 import os
 import shutil
-from fastapi import FastAPI, HTTPException, UploadFile, File
+import sys
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from loguru import logger
 from .models import QueryRequest, QueryResponse
+
+# Configure Loguru for Production
+os.makedirs("logs", exist_ok=True)
+logger.remove()
+logger.add(sys.stdout, format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{message}</cyan>", colorize=True)
+logger.add("logs/backend.log", rotation="10 MB", retention="10 days", compression="zip")
 
 # App banate hain
 app = FastAPI(title="Full-Stack RAG API")
 
-# CORS setup — frontend ko access dene ke liye
+# CORS setup — Secured via Env
+origins = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -32,7 +41,7 @@ async def startup_event():
     setup_hybrid_collection()
     # RAG engine taiyar karo
     rag = RAGCore()
-    print("RAG engine ready!", flush=True)
+    logger.info("RAG engine ready!")
 
 @app.get("/")
 async def root():
@@ -60,9 +69,10 @@ async def upload_pdf(file: UploadFile = File(...)):
 
     try:
         chunks_indexed = await rag.ingest_pdf(temp_path)
+        logger.info(f"Successfully indexed {chunks_indexed} chunks from {file.filename}")
         return {"message": f"Successfully indexed {chunks_indexed} chunks.", "filename": file.filename}
     except Exception as e:
-        print(f"Index Error: {str(e)}") # Debugging ke liye
+        logger.error(f"Index Error for {file.filename}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if os.path.exists(temp_path):
@@ -79,6 +89,10 @@ async def query(request: QueryRequest):
         response = await rag.generate_response(request.question)
         return response
     except Exception as e:
+        import traceback
+        err_msg = f"Query Error: {str(e)}\n{traceback.format_exc()}"
+        print(err_msg)
+        logger.error(err_msg)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/clear")
