@@ -18,6 +18,14 @@ function App() {
     const [isClearing, setIsClearing] = useState(false)
     const [uploadStatus, setUploadStatus] = useState(null)
     const [showClearConfirm, setShowClearConfirm] = useState(false)
+    const [loadingStep, setLoadingStep] = useState(0)
+
+    const loadingSteps = [
+        "Analyzing Query Dynamics...",
+        "Executing Multi-Angle Retrieval...",
+        "Synthesizing Document Context...",
+        "Finalizing Intelligent Response..."
+    ]
 
     const fileInputRef = useRef(null)
     const messagesEndRef = useRef(null)
@@ -32,7 +40,7 @@ function App() {
         if (!file) return
 
         setIsUploading(true)
-        setUploadStatus(`Indexing "${file.name}"...`)
+        setUploadStatus({ type: 'info', text: `Indexing "${file.name}"...` })
 
         const formData = new FormData()
         formData.append('file', file)
@@ -77,15 +85,22 @@ function App() {
         setMessages(prev => [...prev, { role: 'user', content: question }])
         setInput('')
         setIsLoading(true)
+        setLoadingStep(0)
+
+        const stepInterval = setInterval(() => {
+            setLoadingStep(prev => (prev < 3 ? prev + 1 : prev))
+        }, 1500)
 
         try {
             const response = await axios.post('http://localhost:8080/query', { question })
+            clearInterval(stepInterval)
             setMessages(prev => [...prev, {
                 role: 'assistant',
                 content: response.data.answer,
                 sources: response.data.sources
             }])
         } catch (error) {
+            clearInterval(stepInterval)
             let errorMsg = 'An unexpected error occurred while processing your request.';
             if (!error.response) {
                 errorMsg = 'Connection lost. Please ensure the backend services are functional.';
@@ -130,6 +145,22 @@ function App() {
                 </div>
 
                 <div className="sidebar-actions">
+                    <div className="system-status-panel">
+                        <p className="status-title">System Intelligence</p>
+                        <div className="status-row">
+                            <CheckCircle2 size={12} className="text-accent" />
+                            <span>Multi-Query Fusion</span>
+                        </div>
+                        <div className="status-row">
+                            <CheckCircle2 size={12} className="text-accent" />
+                            <span>RRF Rank Aggregation</span>
+                        </div>
+                        <div className="status-row">
+                            <CheckCircle2 size={12} className="text-accent" />
+                            <span>Hybrid Search (Vector + Sparse)</span>
+                        </div>
+                    </div>
+
                     {!showClearConfirm ? (
                         <button className="clear-btn" onClick={() => setShowClearConfirm(true)}>
                             <Trash2 size={14} />
@@ -231,14 +262,17 @@ function App() {
                         >
                             <div className="message-wrapper">
                                 <div className="avatar assistant">
-                                    <Bot size={16} color="white" />
+                                    <Loader2 className="animate-spin" size={16} color="white" />
                                 </div>
                                 <div className="message-body">
-                                    <p className="message-role-label">Inference Logic</p>
-                                    <div className="loading-dots">
-                                        <div className="dot"></div>
-                                        <div className="dot"></div>
-                                        <div className="dot"></div>
+                                    <p className="message-role-label">System Thinking</p>
+                                    <div className="thinking-status">
+                                        <div className="loading-dots">
+                                            <div className="dot"></div>
+                                            <div className="dot"></div>
+                                            <div className="dot"></div>
+                                        </div>
+                                        <span className="step-text">{loadingSteps[loadingStep]}</span>
                                     </div>
                                 </div>
                             </div>

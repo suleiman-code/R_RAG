@@ -27,4 +27,5 @@ Thumbs.db
 temp_*
 backend_log.txt
 available_models.txt
+models_list.txt
 logs/
